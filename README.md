@@ -14,9 +14,14 @@ battery and sensor readings.
     pio run -e reterminal_e1001 -t upload
     pio device monitor -e reterminal_e1001
 
-Logs go to the USB-C port (USB CDC, 115200). If the Homebrew `pio` fails
-generating the bootloader with `No module named 'intelhex'`, use PlatformIO's
-own interpreter: `~/.platformio/penv/bin/pio run ...`.
+Logs go to the USB-C port at 115200. On the E1001 that port is a CH340
+USB-serial bridge wired to UART0 (GPIO 43/44), not the ESP32-S3's native USB,
+so the firmware logs on `Serial0` (see `src/log.h`). Uploads run at 115200
+baud; faster rates make the chip stop responding through the bridge.
+
+If the Homebrew `pio` fails generating the bootloader with
+`No module named 'intelhex'`, use PlatformIO's own interpreter:
+`~/.platformio/penv/bin/pio run ...`.
 
 ## Host tests
 
@@ -116,6 +121,14 @@ the leftmost pixel, **1 = black**. Total 48,000 bytes. CRC32 is IEEE
 
 A frame left open for more than 10 s is discarded.
 
+**macOS note for server authors:** CoreBluetooth silently discards
+write-without-response packets queued while `canSendWriteWithoutResponse`
+is false, and bleak does not wait for it. Wait for that flag (or the
+`peripheralIsReadyToSendWriteWithoutResponse` callback) before each chunk,
+as `tools/prelude_probe.py` does. Without it roughly half the chunks are
+lost and the device answers `INCOMPLETE`. With it a full frame takes about
+2–3 s to transfer plus 3.5 s to refresh.
+
 ### Events (first byte = type)
 
 | Type | Name | Payload |
@@ -143,7 +156,9 @@ reference for the server side.
     .venv/bin/python tools/prelude_probe.py buzzer dismissable
 
 On macOS use Python 3.11 or newer (the system 3.9 cannot build bleak's
-dependencies).
+dependencies). macOS caches peripheral names, so a board that previously ran
+other firmware may show its old name in Bluetooth tools; the probe matches on
+the advertised name and service UUID instead.
 
 ## Manual on-device checklist
 
@@ -161,6 +176,14 @@ dependencies).
    again; a second computer cannot connect.
 7. Power-cycle holding GREEN → `Pairing cleared` overlay then
    `Bluetooth Pairing...`.
+
+## Verified on hardware (2026-09-07)
+
+Checklist items 1–6 pass on a reTerminal E1001 paired to a Mac: pairing and
+bonding, whitelisted reconnect, status overlay, full test frame (48,000 bytes
+in 2.2 s, refresh 3.4 s), button events, dismissable buzzer with GREEN, buzzer
+stopping on disconnect. Item 7 (GREEN at power-on) and the second-computer
+rejection have not been exercised yet.
 
 ## Layout
 
