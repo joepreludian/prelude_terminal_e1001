@@ -36,8 +36,11 @@ std::atomic<bool> g_subscribed{false};
 char g_name[16] = "Prelude-????";
 char g_peerStr[18] = "";
 bool g_bonded = false;
-bool g_hadBondAtConnect = false;
 NimBLEAddress g_bondedAddr;
+// Peer the device is locked to, captured when advertising starts (before any
+// connection) so the check does not depend on callback ordering.
+bool g_locked = false;
+NimBLEAddress g_lockedPeer;
 uint32_t g_droppedChunks = 0;
 
 void refreshBondState() {
@@ -53,6 +56,8 @@ void refreshBondState() {
 
 void startAdvertising() {
   refreshBondState();
+  g_locked = g_bonded;
+  g_lockedPeer = g_bondedAddr;
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
 #if PRELUDE_CONTROLLER_WHITELIST
   if (g_bonded) {
@@ -68,10 +73,10 @@ void startAdvertising() {
 
 class ServerCb : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
-    refreshBondState();
-    g_hadBondAtConnect = g_bonded;
     LOG("ble: connected %s", info.getAddress().toString().c_str());
-    NimBLEDevice::startSecurity(info.getConnHandle());
+    // A bonded host usually encrypts the link before this runs; only ask for
+    // security when it has not, so an unpaired host is made to pair now.
+    if (!info.isEncrypted()) NimBLEDevice::startSecurity(info.getConnHandle());
   }
 
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
@@ -89,7 +94,7 @@ class ServerCb : public NimBLEServerCallbacks {
       return;
     }
     NimBLEAddress peer = info.getIdAddress();
-    if (g_hadBondAtConnect && !(peer == g_bondedAddr)) {
+    if (g_locked && !(peer == g_lockedPeer)) {
       LOG("ble: rejecting unknown peer %s (device is paired to %s)", peer.toString().c_str(), g_peerStr);
       NimBLEDevice::deleteBond(peer);
       g_server->disconnect(info);
@@ -200,10 +205,12 @@ void begin(const Callbacks& cb, uint8_t* frameBuffer, bool clearBonds) {
   g_battery = bat->createCharacteristic("2A19", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
 
   // Services are registered when advertising starts the GATT server.
+  // Enable the scan response first so setName() places the name there and the
+  // 128-bit service UUID fits in the 31-byte advertising packet.
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+  adv->enableScanResponse(true);
   adv->setName(g_name);
   adv->addServiceUUID(kServiceUuid);
-  adv->enableScanResponse(true);
   startAdvertising();
 }
 

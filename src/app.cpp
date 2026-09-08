@@ -193,6 +193,7 @@ void handleButton(prelude::ButtonId id) {
 }
 
 void handleLinkUp(const char* peer) {
+  if (g_state.link == LinkState::Connected) return;  // repeated auth event on the same link
   LOG("app: link up with %s", peer);
   g_state.link = LinkState::Connected;
   publishSample();

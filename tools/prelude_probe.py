@@ -57,12 +57,26 @@ def on_event(_, data: bytearray):
         acks.put_nowait((data[1], data[2]))
 
 
+def advertised_name(dev, adv) -> str:
+    # macOS caches peripheral names, so prefer the name from the scan response.
+    return adv.local_name or dev.name or ""
+
+
+def is_prelude(dev, adv) -> bool:
+    return SVC in adv.service_uuids or advertised_name(dev, adv).startswith("Prelude-")
+
+
+async def scan_prelude(timeout: float = 8.0):
+    found = await BleakScanner.discover(timeout=timeout, return_adv=True)
+    return [(d, adv) for d, adv in found.values() if is_prelude(d, adv)]
+
+
 async def find_device(name):
     print("scanning...")
-    devices = await BleakScanner.discover(timeout=8.0)
-    for d in devices:
-        if d.name and (d.name == name if name else d.name.startswith("Prelude-")):
-            return d
+    for dev, adv in await scan_prelude():
+        if not name or advertised_name(dev, adv) == name:
+            dev.name = advertised_name(dev, adv)
+            return dev
     sys.exit("no Prelude-* device found (is it paired to another host?)")
 
 
@@ -95,6 +109,26 @@ def image_to_frame(path) -> bytes:
     return frame
 
 
+def _core_bluetooth_peripheral(client: BleakClient):
+    """The CBPeripheral behind a bleak client on macOS, or None elsewhere."""
+    backend = getattr(client, "_backend", None)
+    periph = getattr(backend, "_peripheral", None)
+    return periph if periph is not None and hasattr(periph, "canSendWriteWithoutResponse") else None
+
+
+async def write_without_response(client: BleakClient, char: str, payload: bytes):
+    """Write-without-response with back-pressure.
+
+    CoreBluetooth silently discards writes queued while canSendWriteWithoutResponse
+    is false, and bleak does not wait for it, so poll it here. BlueZ queues writes.
+    """
+    periph = _core_bluetooth_peripheral(client)
+    if periph is not None:
+        while not periph.canSendWriteWithoutResponse():
+            await asyncio.sleep(0.001)
+    await client.write_gatt_char(char, payload, response=False)
+
+
 async def with_client(args, fn):
     dev = await find_device(args.name)
     print(f"connecting to {dev.name} ({dev.address})")
@@ -109,10 +143,8 @@ async def with_client(args, fn):
 
 
 async def cmd_scan(args):
-    devices = await BleakScanner.discover(timeout=8.0)
-    for d in devices:
-        if d.name and d.name.startswith("Prelude-"):
-            print(f"{d.name}  {d.address}")
+    for dev, adv in await scan_prelude():
+        print(f"{advertised_name(dev, adv)}  {dev.address}  rssi {adv.rssi}")
 
 
 async def cmd_info(args):
@@ -183,7 +215,7 @@ async def cmd_frame(args):
         loop = asyncio.get_event_loop()
         t0 = loop.time()
         for off in range(0, FRAME_BYTES, chunk):
-            await client.write_gatt_char(FRAME, struct.pack("<H", off) + frame[off:off + chunk], response=False)
+            await write_without_response(client, FRAME, struct.pack("<H", off) + frame[off:off + chunk])
         print(f"sent {FRAME_BYTES} bytes in {loop.time() - t0:.2f} s, waiting for refresh")
         _, st = await send_command(client, bytes([OP["frame_end"]]), timeout=30.0)
         print(f"frame_end -> {ACK_STATUS.get(st)} after {loop.time() - t0:.2f} s")

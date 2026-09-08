@@ -12,10 +12,16 @@ constexpr uint32_t kToneHz = 2000;
 TimerHandle_t g_timer = nullptr;
 prelude::BuzzerPattern g_pattern;
 prelude::BuzzerMode g_mode = prelude::BuzzerMode::Off;
+bool g_toneActive = false;  // noTone() logs an error if no tone is running
 
 void applyTone() {
-  if (g_pattern.toneOn()) tone(PIN_BUZZER, kToneHz);
-  else noTone(PIN_BUZZER);
+  if (g_pattern.toneOn()) {
+    tone(PIN_BUZZER, kToneHz);
+    g_toneActive = true;
+  } else if (g_toneActive) {
+    noTone(PIN_BUZZER);
+    g_toneActive = false;
+  }
 }
 
 void onTimer(TimerHandle_t) {
@@ -27,7 +33,7 @@ void onTimer(TimerHandle_t) {
 
 void begin() {
   pinMode(PIN_BUZZER, OUTPUT);
-  noTone(PIN_BUZZER);
+  digitalWrite(PIN_BUZZER, LOW);
   g_timer = xTimerCreate("buzzer", pdMS_TO_TICKS(prelude::BuzzerPattern::kStepMs), pdTRUE, nullptr, onTimer);
 }
 

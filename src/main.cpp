@@ -14,7 +14,7 @@ static bool greenHeldAtBoot() {
 }
 
 void setup() {
-  Serial.begin(115200);
+  LOG_SERIAL.begin(115200);
   const bool clearBonds = greenHeldAtBoot();
   delay(300);
   LOG("=== Prelude Terminal fw %s ===", FW_VERSION_STRING);
