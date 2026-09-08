@@ -166,9 +166,10 @@ the advertised name and service UUID instead.
    and the battery percentage.
 2. `prelude_probe.py info` → macOS shows a pairing prompt once; the page
    flips to `Connected! Waiting for data...` and info prints firmware 0.1.0.
-3. `status "Hello"` → overlay box. `frame --test` → checkerboard with a
-   solid black band across the top 20 rows (1 = black on the wire; verified
-   on hardware, the inversion in `display::blitFrame` is correct).
+3. `status "Hello"` → overlay box. `frame --test` → 40 px checkerboard with
+   the top-left square black and a labelled box in the middle (1 = black on
+   the wire; verified on hardware, the inversion in `display::blitFrame` is
+   correct).
 4. `listen` then press LEFT/RIGHT/GREEN → BUTTON events.
 5. `buzzer dismissable` → beeping; GREEN → BUZZER_DISMISSED and silence.
    `buzzer on` → GREEN sends BUTTON GREEN and keeps beeping; `buzzer off`.

@@ -88,20 +88,30 @@ async def send_command(client: BleakClient, payload: bytes, timeout: float = 15.
     return opcode, status
 
 
+def test_pattern():
+    """Checkerboard of 40 px squares (top-left square black) with a labelled box."""
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.new("L", (WIDTH, HEIGHT), 255)
+    d = ImageDraw.Draw(img)
+    for y in range(0, HEIGHT, 40):
+        for x in range(0, WIDTH, 40):
+            if ((x // 40) + (y // 40)) % 2 == 0:
+                d.rectangle([x, y, x + 39, y + 39], fill=0)
+    d.rectangle([200, 200, 600, 280], fill=255, outline=0, width=3)
+    try:
+        font = ImageFont.load_default(size=22)  # Pillow >= 10.1 ships a scalable default
+    except TypeError:
+        font = ImageFont.load_default()
+    d.text((220, 226), "Prelude Terminal test frame", fill=0, font=font)
+    return img
+
+
 def image_to_frame(path) -> bytes:
-    from PIL import Image, ImageDraw
+    from PIL import Image
     if path:
         img = Image.open(path).convert("L").resize((WIDTH, HEIGHT))
     else:
-        img = Image.new("L", (WIDTH, HEIGHT), 255)
-        d = ImageDraw.Draw(img)
-        for y in range(0, HEIGHT, 40):
-            for x in range(0, WIDTH, 40):
-                if ((x // 40) + (y // 40)) % 2 == 0:
-                    d.rectangle([x, y, x + 39, y + 39], fill=0)
-        d.rectangle([0, 0, WIDTH - 1, 19], fill=0)
-        d.rectangle([200, 200, 600, 280], fill=255, outline=0, width=3)
-        d.text((220, 230), "Prelude Terminal test frame", fill=0)
+        img = test_pattern()
     bw = img.point(lambda p: 255 if p >= 128 else 0, mode="1")
     packed = bw.tobytes()                       # PIL packs 1 = white
     frame = bytes(~b & 0xFF for b in packed)   # protocol wants 1 = black
