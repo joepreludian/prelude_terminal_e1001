@@ -1,0 +1,6 @@
+.pio/
+docs/specs/
+docs/plans/
+__pycache__/
+.venv/
+.vscode/
