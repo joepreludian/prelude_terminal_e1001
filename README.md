@@ -56,17 +56,40 @@ state. BLE callbacks never block: they validate, copy bytes, and hand work to
 the app task through a FreeRTOS queue. The slow e-paper refresh only ever
 blocks the app task, so buttons, buzzer and BLE stay responsive.
 
-```
-                 NimBLE host task (core 0)                     app task (core 1)
- host ──write──▶ ble_link: parse, validate ──cmd queue──▶ app: state machine
-      ◀─notify── ble_link ◀────────────── events ────────── │  owns display + buzzer
-                    │ frame chunks                          │
-                    ▼                                       ▼
-              staging buffer (PSRAM, 48 KB) ──blit──▶ EPaper sprite (PSRAM, 48 KB) ──SPI──▶ panel
+```mermaid
+flowchart LR
+    Host["Server<br/>(Mac / Linux)"]
 
- button ISR ──▶ edge queue ──▶ button task (debounce) ──▶ app queue
- housekeeping task: every 30 s read battery + SHT4x ──▶ app queue ──▶ info/sensors/battery characteristics
- buzzer: FreeRTOS timer toggles tone() every 300 ms
+    subgraph nimble["NimBLE host task (core 0)"]
+        BL["ble_link<br/>parse, validate, notify"]
+        Staging[("staging buffer<br/>48 KB PSRAM")]
+    end
+
+    subgraph appcore["app task (core 1)"]
+        App["app<br/>state machine, ACKs<br/>owns display and buzzer"]
+        Sprite[("EPaper sprite<br/>48 KB PSRAM")]
+        Panel[/"e-paper panel"/]
+    end
+
+    subgraph aux["helper tasks"]
+        ISR["button ISR"] -->|edge queue| BTask["button task<br/>40 ms debounce"]
+        HK["housekeeping task<br/>every 30 s: battery + SHT4x"]
+        Buzz["buzzer timer<br/>tone on/off every 300 ms"]
+    end
+
+    Host -->|"command (write)"| BL
+    Host -->|"frame chunks (write without response)"| BL
+    BL -->|"events (notify)"| Host
+    BL -->|memcpy at offset| Staging
+    BL -->|cmd queue| App
+    App -->|"ACK, BUTTON, BUZZER_DISMISSED"| BL
+    App -->|"info, sensors, battery level"| BL
+    Staging -->|"blit, inverted"| Sprite
+    App -->|draw pages, overlay| Sprite
+    Sprite -->|"SPI, full refresh ~3.4 s"| Panel
+    BTask -->|app queue| App
+    HK -->|app queue| App
+    App -->|setMode| Buzz
 ```
 
 | Module | Responsibility |
@@ -106,6 +129,19 @@ Device-rendered page (shown until the server sends its first frame):
 |                                                         |
 | [ <status>                                      87% ▮ ] |
 +--------------------------------------------------------+
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> PAIRING : power on without a bond, or with GREEN held
+    [*] --> WAITING : power on with a stored bond
+    PAIRING --> CONNECTED : first host connects and bonds (Just Works)
+    WAITING --> CONNECTED : the bonded host connects
+    CONNECTED --> WAITING : disconnect
+    note right of WAITING
+        Advertising with the controller whitelist.
+        Other hosts cannot connect.
+    end note
 ```
 
 | State | Status line |
@@ -198,6 +234,29 @@ the opcode:
 
 **Sending a frame.** Image format: 800×480, 1 bit per pixel, row-major,
 100 bytes per row, MSB is the leftmost pixel, **1 = black**. 48,000 bytes.
+
+```mermaid
+sequenceDiagram
+    participant S as Server
+    participant B as ble_link (NimBLE task)
+    participant A as app task
+    participant P as Panel
+
+    S->>B: command: FRAME_BEGIN(length 48000, crc32)
+    B-->>S: event: ACK(FRAME_BEGIN, OK or BUSY)
+    loop chunks of up to MTU - 5 bytes, any order
+        S-)B: frame: u16 offset + data (write without response)
+        Note over B: memcpy into the staging buffer
+    end
+    S->>B: command: FRAME_END
+    alt 48,000 bytes received and CRC32 matches
+        B->>A: frame ready (queue)
+        A->>P: blit + full refresh (about 3.4 s)
+        A-->>S: event: ACK(FRAME_END, OK)
+    else short or corrupted
+        B-->>S: event: ACK(FRAME_END, INCOMPLETE or CRC_MISMATCH)
+    end
+```
 
 1. Write `FRAME_BEGIN(48000, crc32)` and wait for `ACK(0x02, OK)`. `BUSY`
    means the previous frame is still being received or rendered.
