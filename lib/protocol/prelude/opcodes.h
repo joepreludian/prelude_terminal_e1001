@@ -36,4 +36,6 @@ enum class ButtonId : uint8_t { Left = 0, Right = 1, Green = 2 };
 
 enum class SensorType : uint8_t { Temperature = 0x01, Humidity = 0x02, Battery = 0x03 };
 
+enum class PowerMode : uint8_t { Saving = 0, Performance = 1 };
+
 }  // namespace prelude
