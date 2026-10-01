@@ -433,9 +433,10 @@ Partial refresh of the status box uses Seeed_GFX `EPaper::updataPartial`
 board). Measured 2026-10-01 on the same unit: a 120 × 28 px partial takes
 1076 ms, consistently, against 3432 ms for a full refresh at 240 MHz (1085 ms
 and 5270 ms at 80 MHz in Saving mode). The library writes
-only the panel's new-image RAM for the window, so ghosting after a run of
-partials is expected to build up; the 20-partial budget bounds it, and the
-visual check after 20 partials is checklist step 12.
+only the panel's new-image RAM for the window, which on this controller
+family can ghost after repeated partials; on this unit the box showed no
+visible ghosting after 20+ consecutive partials (checked 2026-10-01), and the
+20-partial budget keeps a full refresh in the loop regardless.
 
 Manual checklist for a new build:
 
