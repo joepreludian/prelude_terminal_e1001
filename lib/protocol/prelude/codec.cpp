@@ -34,6 +34,11 @@ ParsedCommand parseCommand(const uint8_t* data, size_t len) {
       c.frameCrc = le32(payload + 4);
       c.valid = true;
       return c;
+    case Opcode::SetPowerMode:
+      if (plen != 1 || payload[0] > 1) return c;
+      c.powerMode = static_cast<PowerMode>(payload[0]);
+      c.valid = true;
+      return c;
     case Opcode::FrameEnd:
     case Opcode::BuzzerOff:
     case Opcode::BuzzerOn:
@@ -81,6 +86,7 @@ size_t encodeInfo(const DeviceInfo& info, uint8_t out[kInfoSize]) {
   put16(out + 6, info.height);
   out[8] = info.batteryPercent;
   put16(out + 9, info.batteryMv);
+  out[11] = static_cast<uint8_t>(info.powerMode);
   return kInfoSize;
 }
 

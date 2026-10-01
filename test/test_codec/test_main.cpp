@@ -97,12 +97,37 @@ void test_encode_events() {
   TEST_ASSERT_EQUAL_UINT8(0x02, dis[0]);
 }
 
+void test_parse_set_power_mode() {
+  uint8_t saving[] = {0x20, 0x00};
+  ParsedCommand c = parseCommand(saving, 2);
+  TEST_ASSERT_TRUE(c.valid);
+  TEST_ASSERT_EQUAL_UINT8(0x20, c.opcode);
+  TEST_ASSERT_EQUAL(PowerMode::Saving, c.powerMode);
+
+  uint8_t perf[] = {0x20, 0x01};
+  c = parseCommand(perf, 2);
+  TEST_ASSERT_TRUE(c.valid);
+  TEST_ASSERT_EQUAL(PowerMode::Performance, c.powerMode);
+}
+
+void test_parse_set_power_mode_rejects_bad_payload() {
+  uint8_t none[] = {0x20};
+  TEST_ASSERT_FALSE(parseCommand(none, 1).valid);
+  uint8_t two[] = {0x20, 0x02};
+  TEST_ASSERT_FALSE(parseCommand(two, 2).valid);
+  uint8_t extra[] = {0x20, 0x01, 0x00};
+  TEST_ASSERT_FALSE(parseCommand(extra, 3).valid);
+}
+
 void test_encode_info() {
-  DeviceInfo info{1, 0, 1, 0, 800, 480, 87, 3950};
+  DeviceInfo info{2, 0, 2, 0, 800, 480, 87, 3950, PowerMode::Saving};
   uint8_t out[kInfoSize];
-  TEST_ASSERT_EQUAL_size_t(11, encodeInfo(info, out));
-  const uint8_t expected[] = {1, 0, 1, 0, 0x20, 0x03, 0xE0, 0x01, 87, 0x6E, 0x0F};
-  TEST_ASSERT_EQUAL_MEMORY(expected, out, 11);
+  TEST_ASSERT_EQUAL_size_t(12, encodeInfo(info, out));
+  const uint8_t expected[] = {2, 0, 2, 0, 0x20, 0x03, 0xE0, 0x01, 87, 0x6E, 0x0F, 0};
+  TEST_ASSERT_EQUAL_MEMORY(expected, out, 12);
+  info.powerMode = PowerMode::Performance;
+  encodeInfo(info, out);
+  TEST_ASSERT_EQUAL_UINT8(1, out[11]);
 }
 
 int main() {
@@ -115,6 +140,8 @@ int main() {
   RUN_TEST(test_parse_frame_begin_wrong_length_is_invalid);
   RUN_TEST(test_parse_no_payload_commands);
   RUN_TEST(test_parse_unknown_opcode_and_empty);
+  RUN_TEST(test_parse_set_power_mode);
+  RUN_TEST(test_parse_set_power_mode_rejects_bad_payload);
   RUN_TEST(test_parse_frame_chunk);
   RUN_TEST(test_encode_events);
   RUN_TEST(test_encode_info);

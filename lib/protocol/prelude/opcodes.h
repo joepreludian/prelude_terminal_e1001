@@ -16,6 +16,7 @@ enum class Opcode : uint8_t {
   BuzzerOff           = 0x10,
   BuzzerOn            = 0x11,
   BuzzerOnDismissable = 0x12,
+  SetPowerMode        = 0x20,
 };
 
 enum class EventType : uint8_t {

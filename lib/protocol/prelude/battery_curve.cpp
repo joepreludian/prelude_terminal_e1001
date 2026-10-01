@@ -26,12 +26,4 @@ uint8_t batteryPercentFromMv(uint16_t mv) {
   return 100;
 }
 
-bool batteryRedrawDue(uint8_t drawnPercent, uint8_t nowPercent, uint32_t drawnAtMs, uint32_t nowMs) {
-  int diff = (int)nowPercent - (int)drawnPercent;
-  if (diff < 0) diff = -diff;
-  if (diff == 0) return false;
-  if (diff >= 5) return true;
-  return (nowMs - drawnAtMs) >= 300000u;
-}
-
 }  // namespace prelude

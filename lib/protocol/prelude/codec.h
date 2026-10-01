@@ -12,6 +12,7 @@ struct ParsedCommand {
   uint32_t frameCrc = 0;     // FrameBegin
   const uint8_t* text = nullptr;  // DisplayStatus, points into the input buffer
   uint16_t textLen = 0;
+  PowerMode powerMode = PowerMode::Performance;  // SetPowerMode
 };
 
 struct FrameChunk {
@@ -27,8 +28,9 @@ struct DeviceInfo {
   uint16_t width, height;
   uint8_t batteryPercent;
   uint16_t batteryMv;
+  PowerMode powerMode;
 };
-constexpr size_t kInfoSize = 11;
+constexpr size_t kInfoSize = 12;
 
 ParsedCommand parseCommand(const uint8_t* data, size_t len);
 FrameChunk parseFrameChunk(const uint8_t* data, size_t len);

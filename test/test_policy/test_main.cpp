@@ -24,13 +24,6 @@ void test_battery_curve_points_and_interpolation() {
   TEST_ASSERT_TRUE(mid == 32 || mid == 33);
 }
 
-void test_battery_redraw_rules() {
-  TEST_ASSERT_FALSE(batteryRedrawDue(80, 80, 0, 600000));      // no change, never
-  TEST_ASSERT_FALSE(batteryRedrawDue(80, 78, 0, 60000));       // small change, too soon
-  TEST_ASSERT_TRUE(batteryRedrawDue(80, 75, 0, 60000));        // 5% change
-  TEST_ASSERT_TRUE(batteryRedrawDue(80, 79, 0, 300000));       // any change after 5 min
-}
-
 void test_button_policy() {
   TEST_ASSERT_EQUAL(ButtonAction::Drop, decideButton(ButtonId::Left, BuzzerMode::Off, false));
   TEST_ASSERT_EQUAL(ButtonAction::Drop, decideButton(ButtonId::Green, BuzzerMode::Dismissable, false));
@@ -63,7 +56,6 @@ int main() {
   UNITY_BEGIN();
   RUN_TEST(test_battery_curve_edges);
   RUN_TEST(test_battery_curve_points_and_interpolation);
-  RUN_TEST(test_battery_redraw_rules);
   RUN_TEST(test_button_policy);
   RUN_TEST(test_buzzer_pattern);
   return UNITY_END();
