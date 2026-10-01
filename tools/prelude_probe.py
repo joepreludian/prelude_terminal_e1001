@@ -9,6 +9,7 @@
     python3 tools/prelude_probe.py frame picture.png
     python3 tools/prelude_probe.py frame --test
     python3 tools/prelude_probe.py buzzer on|dismissable|off
+    python3 tools/prelude_probe.py power saving|performance
 """
 import argparse
 import asyncio
@@ -27,7 +28,9 @@ SENSORS = "7e1d0005-6b6f-4a6b-9f1a-5072656c7564"
 BATTERY_LEVEL = "00002a19-0000-1000-8000-00805f9b34fb"
 
 OP = {"status": 0x01, "frame_begin": 0x02, "frame_end": 0x03,
-      "buzzer_off": 0x10, "buzzer_on": 0x11, "buzzer_dismissable": 0x12}
+      "buzzer_off": 0x10, "buzzer_on": 0x11, "buzzer_dismissable": 0x12,
+      "set_power_mode": 0x20}
+POWER_MODE = {0: "saving", 1: "performance"}
 OP_NAME = {v: k for k, v in OP.items()}
 ACK_STATUS = {0: "OK", 1: "BAD_ARG", 2: "BUSY", 3: "CRC_MISMATCH", 4: "INCOMPLETE"}
 BUTTONS = {0: "LEFT", 1: "RIGHT", 2: "GREEN"}
@@ -159,9 +162,11 @@ async def cmd_scan(args):
 
 async def cmd_info(args):
     async def run(client):
-        raw = await client.read_gatt_char(INFO)
-        proto, major, minor, patch, w, h, pct, mv = struct.unpack("<BBBBHHBH", raw)
-        print(f"protocol {proto}, firmware {major}.{minor}.{patch}, {w}x{h}, battery {pct}% ({mv} mV)")
+        raw = bytes(await client.read_gatt_char(INFO))
+        proto, major, minor, patch, w, h, pct, mv = struct.unpack("<BBBBHHBH", raw[:11])
+        mode = POWER_MODE.get(raw[11], raw[11]) if len(raw) >= 12 else "n/a (protocol 1)"
+        print(f"protocol {proto}, firmware {major}.{minor}.{patch}, {w}x{h}, "
+              f"battery {pct}% ({mv} mV), power mode {mode}")
         level = await client.read_gatt_char(BATTERY_LEVEL)
         print(f"battery service level: {level[0]}%")
     await with_client(args, run)
@@ -212,6 +217,14 @@ async def cmd_buzzer(args):
     await with_client(args, run)
 
 
+async def cmd_power(args):
+    async def run(client):
+        mode = 0 if args.mode == "saving" else 1
+        _, st = await send_command(client, bytes([OP["set_power_mode"], mode]))
+        print(f"power {args.mode} -> {ACK_STATUS.get(st)}")
+    await with_client(args, run)
+
+
 async def cmd_frame(args):
     frame = image_to_frame(None if args.test else args.image)
     crc = zlib.crc32(frame) & 0xFFFFFFFF
@@ -246,6 +259,9 @@ def main():
     b = sub.add_parser("buzzer")
     b.add_argument("mode", choices=["on", "dismissable", "off"])
     b.set_defaults(fn=cmd_buzzer)
+    pw = sub.add_parser("power")
+    pw.add_argument("mode", choices=["saving", "performance"])
+    pw.set_defaults(fn=cmd_power)
     f = sub.add_parser("frame")
     f.add_argument("image", nargs="?")
     f.add_argument("--test", action="store_true")

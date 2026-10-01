@@ -14,7 +14,7 @@ battery level and sensor readings.
 | Outputs | passive buzzer, status LED |
 | Sensors | SHT4x temperature/humidity, battery voltage |
 | Radio | BLE only (the ESP32-S3 has no classic Bluetooth) |
-| Power | 2000 mAh battery, no deep sleep |
+| Power | 2000 mAh battery, no deep sleep; Saving / Performance modes set by the server |
 
 ## Contents
 
@@ -97,7 +97,8 @@ flowchart LR
 | `lib/protocol/prelude/` | Opcodes, command/event codec, CRC32, frame assembler, sensor TLV, SHT4x decoding, battery curve, button policy, buzzer pattern, word wrap. No Arduino headers; tested with Unity on `platform = native`. |
 | `src/app.*` | The state machine (PAIRING / WAITING / CONNECTED), command dispatch, ACKs, button policy, "server owns the screen" rule, housekeeping sampling. Sole caller of `display` and `buzzer`. |
 | `src/ble_link.*` | NimBLE service and characteristics, Just Works bonding, lock to the first host (controller whitelist plus an application check), frame staging, notifications. |
-| `src/display.*` | Seeed_GFX `EPaper` wrapper: pairing page, status strip, overlay box, raw 1-bit blit. |
+| `src/display.*` | Seeed_GFX `EPaper` wrapper: pairing page, status strip, overlay box, raw 1-bit blit, top-right status box with partial refresh. |
+| `src/power.*` | Power mode: CPU clock (240 / 80 MHz), BLE connection interval, housekeeping period. |
 | `src/buttons.*` | Falling-edge interrupts, 40 ms debounce, one event per press. |
 | `src/buzzer.*` | 2 kHz tone, 300 ms on / 300 ms off, driven by a FreeRTOS software timer. |
 | `src/battery.*` | GPIO21 enable, ADC on GPIO1, ×2 divider, 8-sample average. |
@@ -122,14 +123,29 @@ Device-rendered page (shown until the server sends its first frame):
 
 ```
 +--------------------------------------------------------+
-|  Prelude Terminal                            [fw 0.1.0] |
-|  Seeed Studio e1001                                     |
+|  Prelude Terminal                      [ᛒ (⌒)  ▮▮▮ 85%] |
+|  Seeed Studio e1001 - fw 0.2.0                          |
 |  Connect to Bluetooth device "Prelude-XXXX"             |
 |  Hold the green button while powering on to unpair      |
 |                                                         |
-| [ <status>                                      87% ▮ ] |
+| [ <status>                                            ] |
 +--------------------------------------------------------+
 ```
+
+### Status box
+
+The device owns the top-right 120 × 28 px region (x 672–791, y 8–35) on
+every screen, including server frames. Frames are still 48,000 bytes and
+blitted whole; the box is painted over that corner before each refresh. Left
+to right: Bluetooth glyph (struck through when no host is connected),
+power-mode gauge (needle left = saving, right = performance), battery glyph
+and percent rounded to 5 %.
+
+Box-only changes use a **partial refresh** of that rectangle instead of the
+3.4 s full refresh: link and mode changes refresh immediately, battery
+changes at most once per minute, and after 20 partials the next change does
+a full refresh to clear ghosting. Any full refresh (frame, status, page)
+resets that count.
 
 ```mermaid
 stateDiagram-v2
@@ -151,8 +167,9 @@ stateDiagram-v2
 | connected | `Connected! Waiting for data...` |
 
 Once a frame has been rendered the server owns the screen: connects,
-disconnects and battery changes no longer redraw anything, and the last frame
-stays on the panel (e-paper keeps it without power) until the next command.
+disconnects and battery changes only update the status box, and the last
+frame stays on the panel (e-paper keeps it without power) until the next
+command.
 
 ## Talking to the device
 
@@ -186,16 +203,19 @@ with a type byte:
 ACK status: 0 OK, 1 BAD_ARG, 2 BUSY, 3 CRC_MISMATCH, 4 INCOMPLETE. Button
 presses while no host is connected are dropped.
 
-**Read `info`** (11 bytes, struct format `<BBBBHHBH`):
+**Read `info`** (12 bytes, struct format `<BBBBHHBHB`):
 
 ```
-u8  protocol_version   (1)
+u8  protocol_version   (2)
 u8  fw_major, fw_minor, fw_patch
 u16 width  (800)
 u16 height (480)
 u8  battery_percent
 u16 battery_mv
+u8  power_mode         (0 saving, 1 performance)
 ```
+
+Protocol 1 firmware sends 11 bytes without the last field.
 
 **Read `sensors`**: a list of `[u8 type][u8 len][value]` records, refreshed
 every 30 s. Records for hardware that was not detected at boot are omitted,
@@ -223,6 +243,7 @@ the opcode:
 | 0x10 | BUZZER_OFF | none | immediately |
 | 0x11 | BUZZER_ON | none | immediately |
 | 0x12 | BUZZER_ON_DISMISSABLE | none | immediately |
+| 0x20 | SET_POWER_MODE | `u8 mode`: 0 saving, 1 performance | immediately |
 
 - **DISPLAY_STATUS** draws a centered 560×240 box over whatever is on
   screen, word-wrapped, at most 6 lines. The next frame or status replaces
@@ -230,6 +251,12 @@ the opcode:
 - **BUZZER_ON** beeps 300 ms on / 300 ms off until BUZZER_OFF or
   disconnect. **BUZZER_ON_DISMISSABLE** does the same but a GREEN press
   silences it and reports BUZZER_DISMISSED instead of BUTTON.
+- **SET_POWER_MODE** switches between Performance (240 MHz, BLE
+  connection interval 15–30 ms, housekeeping every 30 s) and Saving (80 MHz,
+  BLE interval 100–200 ms with slave latency 4, housekeeping every 120 s).
+  Performance is the boot default; the mode survives disconnects. In Saving
+  mode a frame takes roughly 6–10 s to transfer instead of about 2 s, so
+  switch to Performance before a burst of frames.
 - A full command queue answers `ACK(opcode, BUSY)`; retry.
 
 **Sending a frame.** Image format: 800×480, 1 bit per pixel, row-major,
@@ -293,7 +320,7 @@ FRAME   = "7e1d0003-6b6f-4a6b-9f1a-5072656c7564"
 EVENT   = "7e1d0004-6b6f-4a6b-9f1a-5072656c7564"
 SENSORS = "7e1d0005-6b6f-4a6b-9f1a-5072656c7564"
 
-DISPLAY_STATUS, FRAME_BEGIN, FRAME_END, BUZZER_OFF, BUZZER_ON = 0x01, 0x02, 0x03, 0x10, 0x11
+DISPLAY_STATUS, FRAME_BEGIN, FRAME_END, BUZZER_OFF, BUZZER_ON, SET_POWER_MODE = 0x01, 0x02, 0x03, 0x10, 0x11, 0x20
 BUTTONS = {0: "LEFT", 1: "RIGHT", 2: "GREEN"}
 acks = asyncio.Queue()
 
@@ -343,8 +370,8 @@ async def main():
     async with BleakClient(device) as client:
         await client.start_notify(EVENT, on_event)           # subscribe before sending anything
 
-        proto, major, minor, patch, w, h, pct, mv = struct.unpack("<BBBBHHBH", await client.read_gatt_char(INFO))
-        print(f"firmware {major}.{minor}.{patch}, {w}x{h}, battery {pct}% ({mv} mV)")
+        proto, major, minor, patch, w, h, pct, mv, mode = struct.unpack("<BBBBHHBHB", await client.read_gatt_char(INFO))
+        print(f"firmware {major}.{minor}.{patch}, {w}x{h}, battery {pct}% ({mv} mV), power mode {mode}")
 
         raw = await client.read_gatt_char(SENSORS)
         i = 0
@@ -356,6 +383,7 @@ async def main():
 
         print("status ->", await command(client, bytes([DISPLAY_STATUS]) + "Hello from Python".encode()))
         print("frame  ->", await send_frame(client, make_frame()))
+        print("power  ->", await command(client, bytes([SET_POWER_MODE, 0])))   # 0 saving, 1 performance
         print("buzzer ->", await command(client, bytes([BUZZER_ON])))
         await asyncio.sleep(2)
         await command(client, bytes([BUZZER_OFF]))
@@ -379,6 +407,7 @@ asyncio.run(main())
     .venv/bin/python tools/prelude_probe.py frame --test        # checkerboard
     .venv/bin/python tools/prelude_probe.py frame picture.png
     .venv/bin/python tools/prelude_probe.py buzzer on|dismissable|off
+    .venv/bin/python tools/prelude_probe.py power saving|performance
 
 macOS caches peripheral names, so a board that previously ran other firmware
 may show its old name in Bluetooth tools; the probe matches on the
@@ -386,19 +415,25 @@ advertised name and service UUID instead.
 
 ## Tests and verification
 
-Host tests (`pio test -e native`, 31 tests): codec round-trips and
+Host tests (`pio test -e native`, 41 tests): codec round-trips and
 rejections, frame assembly with out-of-order chunks, CRC, BUSY and timeout
 handling, battery curve, button policy, buzzer pattern, sensor TLV, SHT4x
-CRC and conversion, word wrap.
+CRC and conversion, word wrap, status box refresh policy (limiter, budget,
+`millis()` wrap), battery rounding, SET_POWER_MODE parsing, 12-byte info.
 
 Verified on a reTerminal E1001 paired to a Mac (2026-09-07): pairing and
 bonding, whitelisted reconnect, status overlay, full frames (48,000 bytes in
 about 2 s, refresh 3.4 s, polarity correct), button events, dismissable
 buzzer with GREEN, buzzer stopping on disconnect.
 
+Partial refresh of the status box uses Seeed_GFX `EPaper::updataPartial`
+(compiled in for the UC8179; not documented on the Seeed wiki for this
+board). Its duration and ghosting after 20 consecutive partials are still to
+be measured on hardware; see checklist steps 9 and 12.
+
 Manual checklist for a new build:
 
-1. Fresh flash → pairing page with `Bluetooth Pairing...` and battery.
+1. Fresh flash → pairing page with `Bluetooth Pairing...` and the status box.
 2. `prelude_probe.py info` → pairing prompt once, page flips to
    `Connected! Waiting for data...`.
 3. `status "Hello"` → overlay box. `frame --test` → checkerboard with the
@@ -409,6 +444,14 @@ Manual checklist for a new build:
 6. Disconnect → buzzer stops, screen unchanged, a second computer cannot
    connect.
 7. Power-cycle holding GREEN → `Pairing cleared`, then `Bluetooth Pairing...`.
+8. Status box visible on the pairing page and over `frame --test`.
+9. Disconnect → the Bluetooth glyph gets its strike-through via a partial
+   refresh (log `status box partial 1/20`, no full-screen flash).
+10. `power saving` → log shows `power: saving (cpu 80 MHz ...)` and
+    `ble: conn interval 100.00 ms ...`; the gauge needle flips with a partial.
+11. `frame --test` in saving mode still renders (slower transfer).
+12. 20 box partials → the next change logs `status box budget reached, full refresh`.
+13. Battery percent in the box only moves in 5 % steps, at most once per minute.
 
 ## Repository layout
 
