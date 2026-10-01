@@ -42,6 +42,12 @@ NimBLEAddress g_bondedAddr;
 bool g_locked = false;
 NimBLEAddress g_lockedPeer;
 uint32_t g_droppedChunks = 0;
+ConnParams g_connParams{12, 24, 0, 400};  // Performance defaults until power::begin runs
+
+void applyConnParams(uint16_t connHandle) {
+  g_server->updateConnParams(connHandle, g_connParams.minInterval, g_connParams.maxInterval,
+                             g_connParams.latency, g_connParams.timeout);
+}
 
 void refreshBondState() {
   g_bonded = NimBLEDevice::getNumBonds() > 0;
@@ -102,7 +108,13 @@ class ServerCb : public NimBLEServerCallbacks {
     }
     refreshBondState();
     LOG("ble: authenticated %s bonded=%d mtu=%u", g_peerStr, info.isBonded(), info.getMTU());
+    applyConnParams(info.getConnHandle());
     if (g_cb.onConnected) g_cb.onConnected(g_peerStr);
+  }
+
+  void onConnParamsUpdate(NimBLEConnInfo& info) override {
+    LOG("ble: conn interval %.2f ms latency %u timeout %u ms", info.getConnInterval() * 1.25f,
+        (unsigned)info.getConnLatency(), (unsigned)info.getConnTimeout() * 10u);
   }
 
   void onMTUChange(uint16_t mtu, NimBLEConnInfo&) override { LOG("ble: mtu %u", mtu); }
@@ -245,6 +257,13 @@ void setBatteryLevel(uint8_t percent) {
 }
 
 void setRenderBusy(bool busy) { g_renderBusy = busy; }
+
+void setConnParams(const ConnParams& p) {
+  g_connParams = p;
+  if (!g_server) return;
+  const uint8_t n = g_server->getConnectedCount();
+  for (uint8_t i = 0; i < n; ++i) applyConnParams(g_server->getPeerInfo(i).getConnHandle());
+}
 const uint8_t* frameData() { return g_assembler ? g_assembler->data() : nullptr; }
 
 }  // namespace ble_link
