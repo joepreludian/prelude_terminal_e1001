@@ -254,9 +254,11 @@ the opcode:
 - **SET_POWER_MODE** switches between Performance (240 MHz, BLE
   connection interval 15–30 ms, housekeeping every 30 s) and Saving (80 MHz,
   BLE interval 100–200 ms with slave latency 4, housekeeping every 120 s).
-  Performance is the boot default; the mode survives disconnects. In Saving
-  mode a frame takes roughly 6–10 s to transfer instead of about 2 s, so
-  switch to Performance before a burst of frames.
+  Performance is the boot default; the mode survives disconnects. Saving
+  mode is slow for frames: measured from a Mac, a 48 KB frame took 41 s to
+  transfer (slave latency 4 lets the device skip four of every five
+  connection events) and the full refresh took 5.3 s instead of 3.4 s at
+  80 MHz. Switch to Performance before a burst of frames and back afterwards.
 - A full command queue answers `ACK(opcode, BUSY)`; retry.
 
 **Sending a frame.** Image format: 800×480, 1 bit per pixel, row-major,
@@ -428,8 +430,12 @@ buzzer with GREEN, buzzer stopping on disconnect.
 
 Partial refresh of the status box uses Seeed_GFX `EPaper::updataPartial`
 (compiled in for the UC8179; not documented on the Seeed wiki for this
-board). Its duration and ghosting after 20 consecutive partials are still to
-be measured on hardware; see checklist steps 9 and 12.
+board). Measured 2026-10-01 on the same unit: a 120 × 28 px partial takes
+1076 ms, consistently, against 3432 ms for a full refresh at 240 MHz (1085 ms
+and 5270 ms at 80 MHz in Saving mode). The library writes
+only the panel's new-image RAM for the window, so ghosting after a run of
+partials is expected to build up; the 20-partial budget bounds it, and the
+visual check after 20 partials is checklist step 12.
 
 Manual checklist for a new build:
 
@@ -449,7 +455,7 @@ Manual checklist for a new build:
    refresh (log `status box partial 1/20`, no full-screen flash).
 10. `power saving` → log shows `power: saving (cpu 80 MHz ...)` and
     `ble: conn interval 100.00 ms ...`; the gauge needle flips with a partial.
-11. `frame --test` in saving mode still renders (slower transfer).
+11. `frame --test` in saving mode still renders (about 41 s transfer, 5.3 s refresh).
 12. 20 box partials → the next change logs `status box budget reached, full refresh`.
 13. Battery percent in the box only moves in 5 % steps, at most once per minute.
 
