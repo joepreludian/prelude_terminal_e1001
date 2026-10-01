@@ -11,10 +11,12 @@
 #include "buzzer.h"
 #include "display.h"
 #include "log.h"
+#include "power.h"
 #include "prelude/battery_curve.h"
 #include "prelude/button_policy.h"
 #include "prelude/codec.h"
 #include "prelude/sensors_tlv.h"
+#include "prelude/status_policy.h"
 #include "sensors.h"
 #include "version.h"
 
@@ -27,6 +29,7 @@ struct AppMsg {
   MsgType type;
   uint8_t opcode;
   uint8_t button;
+  uint8_t arg;  // SetPowerMode payload
   uint16_t textLen;
   char text[prelude::kMaxStatusText];
   char peer[18];
@@ -40,11 +43,10 @@ struct State {
   bool serverOwnsScreen = false;
   prelude::BuzzerMode buzzer = prelude::BuzzerMode::Off;
   prelude::SensorSnapshot sample{false, 0, 0, true, 0, 0};
-  uint8_t drawnBatteryPercent = 0;
-  uint32_t drawnAtMs = 0;
+  prelude::StatusBoxState drawnBox{false, prelude::PowerMode::Performance, 0};
+  uint32_t lastBatteryPartialMs = 0;
+  uint16_t partialsSinceFull = 0;
 };
-
-constexpr uint32_t kHousekeepingMs = 30000;
 
 QueueHandle_t g_queue = nullptr;
 State g_state;
@@ -68,6 +70,7 @@ bool onBleCommand(const prelude::ParsedCommand& cmd) {
     m.textLen = cmd.textLen;
     memcpy(m.text, cmd.text, cmd.textLen);
   }
+  m.arg = static_cast<uint8_t>(cmd.powerMode);
   return post(m);
 }
 
@@ -112,19 +115,58 @@ const char* statusText(char* buf, size_t cap) {
   return "";
 }
 
+prelude::StatusBoxState currentBox() {
+  return prelude::StatusBoxState{g_state.link == LinkState::Connected, power::mode(),
+                                 prelude::roundBatteryPercent(g_state.sample.batteryPercent)};
+}
+
+// Call after any full refresh: the sprite now carries this box.
+void noteFullRefresh(const prelude::StatusBoxState& box) {
+  g_state.drawnBox = box;
+  g_state.partialsSinceFull = 0;
+}
+
+// Bring the on-panel box in line with the current state, per the policy.
+void syncBox() {
+  const prelude::StatusBoxState next = currentBox();
+  const uint32_t now = millis();
+  const prelude::RefreshInput in{g_state.drawnBox, next, now, g_state.lastBatteryPartialMs,
+                                 g_state.partialsSinceFull};
+  const bool batteryOnly = next.linkUp == g_state.drawnBox.linkUp &&
+                           next.powerMode == g_state.drawnBox.powerMode;
+  switch (prelude::decideRefresh(in)) {
+    case prelude::RefreshKind::None:
+      return;
+    case prelude::RefreshKind::Partial:
+      display::paintStatusBox(next);
+      display::refreshStatusBox();
+      g_state.drawnBox = next;
+      ++g_state.partialsSinceFull;
+      if (batteryOnly) g_state.lastBatteryPartialMs = now;
+      LOG("app: status box partial %u/%u", g_state.partialsSinceFull, prelude::kPartialBudget);
+      return;
+    case prelude::RefreshKind::Full:
+      display::paintStatusBox(next);
+      display::refreshFull();
+      noteFullRefresh(next);
+      if (batteryOnly) g_state.lastBatteryPartialMs = now;
+      LOG("app: status box budget reached, full refresh");
+      return;
+  }
+}
+
 void drawPage() {
   char buf[80];
-  display::PageInfo page{FW_VERSION_STRING, ble_link::deviceName(), statusText(buf, sizeof buf),
-                         g_state.sample.batteryPercent};
-  display::drawPairingPage(page);
-  g_state.drawnBatteryPercent = g_state.sample.batteryPercent;
-  g_state.drawnAtMs = millis();
+  display::PageInfo page{FW_VERSION_STRING, ble_link::deviceName(), statusText(buf, sizeof buf)};
+  const prelude::StatusBoxState box = currentBox();
+  display::drawPairingPage(page, box);
+  noteFullRefresh(box);
 }
 
 void publishSample() {
   prelude::DeviceInfo info{PROTOCOL_VERSION, FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH,
                            prelude::kScreenWidth, prelude::kScreenHeight,
-                           g_state.sample.batteryPercent, g_state.sample.batteryMv};
+                           g_state.sample.batteryPercent, g_state.sample.batteryMv, power::mode()};
   ble_link::setInfo(info);
   uint8_t tlv[prelude::kMaxSensorTlv];
   size_t n = prelude::encodeSensorTlv(g_state.sample, tlv, sizeof tlv);
@@ -139,10 +181,19 @@ void setBuzzer(prelude::BuzzerMode mode) {
 
 void handleCommand(const AppMsg& m) {
   switch (static_cast<prelude::Opcode>(m.opcode)) {
-    case prelude::Opcode::DisplayStatus:
+    case prelude::Opcode::DisplayStatus: {
       LOG("app: display_status (%u bytes)", m.textLen);
-      display::drawOverlayBox(m.text, m.textLen);
+      const prelude::StatusBoxState box = currentBox();
+      display::drawOverlayBox(m.text, m.textLen, box);
+      noteFullRefresh(box);
       ble_link::sendAck(m.opcode, prelude::AckStatus::Ok);
+      return;
+    }
+    case prelude::Opcode::SetPowerMode:
+      power::set(static_cast<prelude::PowerMode>(m.arg));
+      publishSample();
+      ble_link::sendAck(m.opcode, prelude::AckStatus::Ok);
+      syncBox();
       return;
     case prelude::Opcode::BuzzerOff:
       setBuzzer(prelude::BuzzerMode::Off);
@@ -163,7 +214,9 @@ void handleCommand(const AppMsg& m) {
 
 void handleFrameReady() {
   const uint32_t t0 = millis();
-  display::blitFrame(ble_link::frameData());
+  const prelude::StatusBoxState box = currentBox();
+  display::blitFrame(ble_link::frameData(), box);
+  noteFullRefresh(box);
   g_state.serverOwnsScreen = true;
   ble_link::setRenderBusy(false);
   ble_link::sendAck(static_cast<uint8_t>(prelude::Opcode::FrameEnd), prelude::AckStatus::Ok);
@@ -197,7 +250,7 @@ void handleLinkUp(const char* peer) {
   LOG("app: link up with %s", peer);
   g_state.link = LinkState::Connected;
   publishSample();
-  if (!g_state.serverOwnsScreen) drawPage();
+  if (g_state.serverOwnsScreen) syncBox(); else drawPage();
 }
 
 void handleLinkDown() {
@@ -205,17 +258,14 @@ void handleLinkDown() {
   g_state.link = ble_link::isBonded() ? LinkState::Waiting : LinkState::Pairing;
   setBuzzer(prelude::BuzzerMode::Off);
   ble_link::setRenderBusy(false);
-  if (!g_state.serverOwnsScreen) drawPage();
+  if (g_state.serverOwnsScreen) syncBox(); else drawPage();
 }
 
 void handleHousekeeping(const prelude::SensorSnapshot& s) {
   g_state.sample = s;
   if (s.hasSht4x) g_panelTempC = s.tempCenti / 100.0f;
   publishSample();
-  if (!g_state.serverOwnsScreen &&
-      prelude::batteryRedrawDue(g_state.drawnBatteryPercent, s.batteryPercent, g_state.drawnAtMs, millis())) {
-    drawPage();
-  }
+  syncBox();
 }
 
 void appTask(void*) {
@@ -259,7 +309,7 @@ prelude::SensorSnapshot takeSample() {
 
 void housekeepingTask(void*) {
   for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(kHousekeepingMs));
+    vTaskDelay(pdMS_TO_TICKS(power::housekeepingMs()));
     AppMsg m{};
     m.type = MsgType::Housekeeping;
     m.sample = takeSample();
@@ -284,6 +334,7 @@ void begin(bool bondsCleared) {
 
   ble_link::Callbacks cb{onBleConnected, onBleDisconnected, onBleCommand, onBleFrameReady};
   ble_link::begin(cb, g_frameBuffer, bondsCleared);
+  power::begin();
   g_state.link = ble_link::isBonded() ? LinkState::Waiting : LinkState::Pairing;
   publishSample();
 
@@ -292,7 +343,9 @@ void begin(bool bondsCleared) {
   if (bondsCleared) {
     drawPage();
     const char* msg = "Pairing cleared";
-    display::drawOverlayBox(msg, strlen(msg));
+    const prelude::StatusBoxState box = currentBox();
+    display::drawOverlayBox(msg, strlen(msg), box);
+    noteFullRefresh(box);
     vTaskDelay(pdMS_TO_TICKS(2000));
   }
   drawPage();
